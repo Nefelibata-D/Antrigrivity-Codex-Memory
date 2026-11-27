@@ -10,10 +10,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import readline from 'node:readline';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HTML_PATH = path.join(__dirname, 'dist', 'dashboard.html');
+const PLUGIN_JSON_PATH = path.join(__dirname, 'plugin.json');
+const GITHUB_REPO = 'Nefelibata-D/Antrigrivity-Codex-Memory';
 const APP_URI = 'ui://memory/dashboard.html';
 
 const HOME = os.homedir();
@@ -437,10 +440,155 @@ const TOOLS = [
     description: 'App-only: read the latest built dist/dashboard.html from disk for in-place hot reload.',
     inputSchema: { type: 'object', properties: {} },
     _meta: APP_ONLY_META
+  },
+  {
+    name: 'memory_check_update',
+    title: 'Check Plugin Update',
+    description: 'App-only: check GitHub Releases for a newer version of Antigrivity Memory.',
+    inputSchema: { type: 'object', properties: {} },
+    _meta: APP_ONLY_META
+  },
+  {
+    name: 'memory_apply_update',
+    title: 'Apply Plugin Update',
+    description: 'App-only: download the latest GitHub Release tarball and run install.mjs --force --skip-npm.',
+    inputSchema: {
+      type: 'object',
+      properties: { tag: { type: 'string' } }
+    },
+    _meta: APP_ONLY_META
   }
 ];
 
-function callTool(name, args = {}) {
+function getCurrentVersion() {
+  const pkg = readJsonSafe(PLUGIN_JSON_PATH, {});
+  return String(pkg.version || '1.0.0').replace(/^v/i, '');
+}
+
+function compareSemver(a, b) {
+  const pa = String(a || '0.0.0').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '0.0.0').replace(/^v/i, '').split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  }
+  return 0;
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'antigrivity-memory-updater',
+      'Accept': 'application/vnd.github+json'
+    }
+  });
+  if (!res.ok) throw new Error(`GitHub API HTTP ${res.status}`);
+  return res.json();
+}
+
+async function checkUpdate() {
+  const current = getCurrentVersion();
+  const checkedAt = new Date().toISOString();
+  try {
+    const rel = await fetchJson(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`);
+    const tag = String(rel.tag_name || '');
+    const latest = tag.replace(/^v/i, '') || current;
+    return {
+      current_version: current,
+      latest_version: latest,
+      latest_tag: tag || `v${latest}`,
+      has_update: compareSemver(latest, current) > 0,
+      release_name: rel.name || tag,
+      release_notes: rel.body || '',
+      release_url: rel.html_url || `https://github.com/${GITHUB_REPO}/releases`,
+      published_at: rel.published_at || '',
+      checked_at: checkedAt
+    };
+  } catch (err) {
+    // Fallback to tags if no formal release exists yet
+    try {
+      const tags = await fetchJson(`https://api.github.com/repos/${GITHUB_REPO}/tags?per_page=1`);
+      if (Array.isArray(tags) && tags.length > 0) {
+        const tag = String(tags[0].name || '');
+        const latest = tag.replace(/^v/i, '') || current;
+        return {
+          current_version: current,
+          latest_version: latest,
+          latest_tag: tag,
+          has_update: compareSemver(latest, current) > 0,
+          release_name: tag,
+          release_notes: '',
+          release_url: `https://github.com/${GITHUB_REPO}/releases/tag/${tag}`,
+          published_at: '',
+          checked_at: checkedAt
+        };
+      }
+    } catch {
+      // ignore fallback error
+    }
+    return {
+      current_version: current,
+      latest_version: current,
+      latest_tag: `v${current}`,
+      has_update: false,
+      release_name: '',
+      release_notes: '',
+      release_url: `https://github.com/${GITHUB_REPO}/releases`,
+      published_at: '',
+      checked_at: checkedAt,
+      error: err?.message || String(err)
+    };
+  }
+}
+
+async function applyUpdate(requestedTag) {
+  const info = await checkUpdate();
+  const tag = requestedTag || info.latest_tag;
+  if (!tag) throw new Error('未找到可用的目标版本 Tag');
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-mem-upd-'));
+  const tarPath = path.join(tmpRoot, 'release.tar.gz');
+  const extractDir = path.join(tmpRoot, 'src');
+  fs.mkdirSync(extractDir, { recursive: true });
+
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/tarball/${encodeURIComponent(tag)}`, {
+      headers: { 'User-Agent': 'antigrivity-memory-updater' },
+      redirect: 'follow'
+    });
+    if (!res.ok) throw new Error(`下载更新包失败 (HTTP ${res.status})`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(tarPath, buf);
+
+    execFileSync('tar', ['-xzf', tarPath, '-C', extractDir, '--strip-components=1'], {
+      stdio: 'ignore',
+      windowsHide: true
+    });
+
+    const installer = path.join(extractDir, 'install.mjs');
+    if (!fs.existsSync(installer)) {
+      throw new Error('更新包中未找到 install.mjs');
+    }
+    execFileSync(process.execPath, [installer, '--force', '--skip-npm'], {
+      cwd: extractDir,
+      stdio: 'ignore',
+      windowsHide: true
+    });
+
+    return {
+      ok: true,
+      updated_to: tag,
+      message: `已成功更新到 ${tag}，请点击顶部「热重载」加载最新界面。`
+    };
+  } finally {
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup error
+    }
+  }
+}
+
+async function callTool(name, args = {}) {
   switch (name) {
     case 'open_memory_dashboard': {
       const overview = getOverview();
@@ -491,6 +639,14 @@ function callTool(name, args = {}) {
       const mtimeMs = fs.statSync(HTML_PATH).mtimeMs;
       return { content: [{ type: 'text', text: 'ok' }], structuredContent: { html, mtime_ms: mtimeMs } };
     }
+    case 'memory_check_update': {
+      const info = await checkUpdate();
+      return { content: [{ type: 'text', text: 'ok' }], structuredContent: info };
+    }
+    case 'memory_apply_update': {
+      const res = await applyUpdate(args.tag);
+      return { content: [{ type: 'text', text: res.message }], structuredContent: res };
+    }
     case 'memory_delete_rollout': {
       const file = args.file || '';
       if (!isSafeSegment(file) || !file.endsWith('.md')) throw new Error('Invalid file');
@@ -519,7 +675,7 @@ function writeMessage(msg) {
   process.stdout.write(JSON.stringify(msg) + '\n');
 }
 
-function handleRequest(req) {
+async function handleRequest(req) {
   const { id, method, params } = req;
   if (id === undefined) {
     // Notification (e.g. notifications/initialized) — no response
@@ -547,7 +703,7 @@ function handleRequest(req) {
       return;
     }
     if (method === 'tools/call') {
-      const result = callTool(params?.name, params?.arguments || {});
+      const result = await callTool(params?.name, params?.arguments || {});
       writeMessage({ jsonrpc: '2.0', id, result });
       return;
     }

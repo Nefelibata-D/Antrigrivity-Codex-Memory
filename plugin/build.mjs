@@ -1070,6 +1070,45 @@ const html = `<!doctype html>
     }
     .card.allow-overflow { overflow: visible; }
 
+    /* Update banner (powertools style) */
+    .update-banner {
+      margin: 0 16px 14px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid color-mix(in srgb, var(--chart-1) 34%, transparent);
+      background: color-mix(in srgb, var(--chart-1) 10%, var(--bg));
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .update-banner-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .update-banner-title {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--fg);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .update-notes {
+      font-size: 12px;
+      line-height: 1.55;
+      color: var(--fg-muted);
+      white-space: pre-wrap;
+      max-height: 140px;
+      overflow-y: auto;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--card) 75%, transparent);
+      border: 1px solid var(--border-soft);
+    }
+
     .toast-bar {
       position: fixed;
       right: 20px;
@@ -1381,6 +1420,32 @@ const html = `<!doctype html>
           </div>
           <div class="setting-row" style="justify-content:flex-end">
             <button type="button" class="btn primary" id="btnSaveConfig">保存设置</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>版本与自动更新</h2>
+            <span class="pill" id="updStatusPill" data-tone="info">当前 v1.1.0</span>
+          </div>
+          <div class="setting-row">
+            <div class="setting-meta">
+              <span class="setting-title">Antigrivity Memory 插件</span>
+              <span class="setting-desc" id="updDetail">从 GitHub Releases 检查最新版本并支持一键在线更新</span>
+            </div>
+            <div class="setting-ctrl">
+              <button type="button" class="btn" id="btnCheckUpdate">检查更新</button>
+              <button type="button" class="btn primary" id="btnApplyUpdate" hidden>立即更新</button>
+            </div>
+          </div>
+          <div class="update-banner" id="updateBanner" hidden>
+            <div class="update-banner-head">
+              <span class="update-banner-title">
+                <span class="pill" data-tone="ok" id="updNewTagPill">v1.1.0</span>
+                <span id="updReleaseName">发现新版本</span>
+              </span>
+            </div>
+            <div class="update-notes" id="updReleaseNotes"></div>
           </div>
         </div>
       </section>

@@ -868,6 +868,71 @@ function bindEvents() {
       showToast('热重载失败：' + err.message);
     }
   };
+
+  let latestUpdateTag = '';
+
+  $('btnCheckUpdate').onclick = async () => {
+    const btn = $('btnCheckUpdate');
+    const pill = $('updStatusPill');
+    const detail = $('updDetail');
+    const banner = $('updateBanner');
+    const applyBtn = $('btnApplyUpdate');
+    btn.disabled = true;
+    btn.textContent = '检查中...';
+    try {
+      const info = await callServer('memory_check_update', {});
+      if (info?.error) {
+        pill.dataset.tone = 'busy';
+        pill.textContent = `当前 v${info.current_version}`;
+        detail.textContent = `检查失败：${info.error}`;
+        banner.hidden = true;
+        applyBtn.hidden = true;
+      } else if (info?.has_update) {
+        latestUpdateTag = info.latest_tag;
+        pill.dataset.tone = 'ok';
+        pill.textContent = `发现新版本 ${info.latest_tag}`;
+        detail.textContent = `当前版本 v${info.current_version}，可一键更新至 ${info.latest_tag}`;
+        $('updNewTagPill').textContent = info.latest_tag;
+        $('updReleaseName').textContent = info.release_name || info.latest_tag;
+        $('updReleaseNotes').textContent = info.release_notes || '暂无更新说明';
+        banner.hidden = false;
+        applyBtn.hidden = false;
+        showToast(`发现新版本 ${info.latest_tag}`);
+      } else {
+        pill.dataset.tone = 'ok';
+        pill.textContent = `已是最新 v${info.current_version}`;
+        detail.textContent = `上次检查：${fmtTime(info.checked_at)}`;
+        banner.hidden = true;
+        applyBtn.hidden = true;
+        showToast('当前已是最新版本');
+      }
+    } catch (err) {
+      showToast('检查更新失败：' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '检查更新';
+    }
+  };
+
+  $('btnApplyUpdate').onclick = async () => {
+    const btn = $('btnApplyUpdate');
+    btn.disabled = true;
+    btn.textContent = '更新中...';
+    try {
+      const res = await callServer('memory_apply_update', { tag: latestUpdateTag });
+      showToast(res?.message || '更新完成，请点击热重载');
+      $('updStatusPill').dataset.tone = 'ok';
+      $('updStatusPill').textContent = `已更新至 ${res?.updated_to || latestUpdateTag}`;
+      $('updDetail').textContent = '更新完成，点击顶部「热重载」即可立即生效';
+      $('updateBanner').hidden = true;
+      btn.hidden = true;
+    } catch (err) {
+      showToast('自动更新失败：' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '立即更新';
+    }
+  };
 }
 
 let hydrated = false;

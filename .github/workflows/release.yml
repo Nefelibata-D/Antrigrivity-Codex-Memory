@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract annotated tag message
+        id: tag_msg
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          MSG="$(git tag -l --format='%(contents)' "$TAG")"
+          {
+            echo "body<<EOF"
+            echo "$MSG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: ${{ steps.tag_msg.outputs.body }}
+          generate_release_notes: true
