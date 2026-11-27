@@ -1,7 +1,7 @@
 {
   "name": "memory-dashboard",
   "displayName": "Memory",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Codex v2 + Supermemory dashboard for Antigravity: inspect consolidation status, edit global/project memory_summary.md, browse rollout summaries, and manage ad-hoc notes.",
   "logo": "assets/logo.png"
 }
