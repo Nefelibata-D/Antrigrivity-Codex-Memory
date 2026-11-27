@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "memory": {
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/server.mjs"
+      ]
+    }
+  }
+}
