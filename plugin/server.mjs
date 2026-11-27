@@ -28,6 +28,8 @@ const STATE_FILE = path.join(MEMORIES_DIR, 'state.json');
 const QUEUE_FILE = path.join(MEMORIES_DIR, 'queue.json');
 const LOCK_FILE = path.join(MEMORIES_DIR, 'consolidation.lock');
 const CONFIG_FILE = path.join(MEMORIES_DIR, 'config.json');
+const STAGING_DIR = path.join(MEMORIES_DIR, 'staging');
+const BRAIN_DIR = path.join(HOME, '.gemini', 'antigravity', 'brain');
 const MCP_CONFIG_FILE = path.join(CONFIG_DIR, 'mcp_config.json');
 const MCP_SCHEMAS_DIR = path.join(HOME, '.gemini', 'antigravity', 'mcp', 'supermemory');
 
@@ -154,6 +156,94 @@ function listScopes() {
   return scopes;
 }
 
+function extractTitleFromTranscript(filePath, maxChars = 80) {
+  if (!filePath) return '';
+  try {
+    if (!fs.existsSync(filePath)) return '';
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(65536);
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    if (bytesRead <= 0) return '';
+    const lines = buf.subarray(0, bytesRead).toString('utf8').split(/\r?\n/);
+    for (const rawLine of lines) {
+      if (!rawLine.trim()) continue;
+      let obj;
+      try {
+        obj = JSON.parse(rawLine);
+      } catch {
+        continue;
+      }
+      if (obj.type === 'USER_INPUT' && typeof obj.content === 'string') {
+        const m = obj.content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
+        const text = (m ? m[1] : obj.content).trim();
+        if (!text) continue;
+        const firstLine = text
+          .split(/\r?\n/)
+          .map((l) => l.replace(/^[#>*\-\s`]+/, '').trim())
+          .find((l) => l.length > 0) || '';
+        const cleaned = firstLine.replace(/\s+/g, ' ').trim();
+        if (cleaned) {
+          return cleaned.length > maxChars ? cleaned.slice(0, maxChars).trimEnd() + '…' : cleaned;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
+async function fetchConversationTitlesFromLS(convIds) {
+  const map = new Map();
+  const addr = process.env.ANTIGRAVITY_LS_ADDRESS;
+  const tok = process.env.ANTIGRAVITY_CSRF_TOKEN;
+  if (!addr || !tok || !Array.isArray(convIds) || convIds.length === 0) return map;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const res = await fetch(`http://${addr}/product.v1.ConversationService/ListConversations`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Connect-Protocol-Version': '1',
+        'x-antigravity-csrf-token': tok
+      },
+      body: JSON.stringify({ pageSize: 100, includeArchived: true }),
+      signal: controller.signal
+    });
+    if (res.ok) {
+      const data = await res.json();
+      for (const c of data?.conversations || []) {
+        const t = c?.annotations?.title?.trim() || c?.state?.summary?.trim() || '';
+        if (c?.id && t) map.set(c.id, t);
+      }
+    }
+  } catch {
+    // ignore LS lookup failure
+  } finally {
+    clearTimeout(timer);
+  }
+  return map;
+}
+
+function resolveConversationTitle(item, lsTitleMap) {
+  const id = item?.conversation_id || '';
+  if (id && lsTitleMap?.has(id)) return lsTitleMap.get(id);
+  if (item?.title && String(item.title).trim()) return String(item.title).trim();
+  const candidates = [
+    item?.staged_path,
+    id ? path.join(STAGING_DIR, `${id}.jsonl`) : '',
+    item?.transcript_path,
+    id ? path.join(BRAIN_DIR, id, '.system_generated', 'logs', 'transcript.jsonl') : ''
+  ].filter(Boolean);
+  for (const p of candidates) {
+    const t = extractTitleFromTranscript(p);
+    if (t) return t;
+  }
+  return id;
+}
+
 function getLockStatus() {
   const lock = readJsonSafe(LOCK_FILE, null);
   if (!lock || !lock.started_at) return { active: false, stale: false, lock: null };
@@ -162,7 +252,7 @@ function getLockStatus() {
   return { active, stale: !active, lock };
 }
 
-function getOverview() {
+async function getOverview() {
   ensureDir(GLOBAL_DIR);
   ensureDir(PROJECTS_DIR);
   const state = readJsonSafe(STATE_FILE, { last_successful_run_at: null, conversations: {} });
@@ -230,11 +320,18 @@ function getOverview() {
     };
   });
 
+  const rawQueueItems = Object.values(queue.items || {});
+  const lsTitleMap = await fetchConversationTitlesFromLS(rawQueueItems.map((it) => it.conversation_id));
+  const queueItems = rawQueueItems.map((it) => ({
+    ...it,
+    title: resolveConversationTitle(it, lsTitleMap)
+  }));
+
   return {
     last_successful_run_at: state.last_successful_run_at || null,
     tracked_conversations: Object.keys(state.conversations || {}).length,
-    queue_count: Object.keys(queue.items || {}).length,
-    queue_items: Object.values(queue.items || {}),
+    queue_count: queueItems.length,
+    queue_items: queueItems,
     lock: lockStatus,
     model: cfg.model,
     schedule: `${cfg.schedule_time} Asia/Shanghai`,
@@ -591,7 +688,7 @@ async function applyUpdate(requestedTag) {
 async function callTool(name, args = {}) {
   switch (name) {
     case 'open_memory_dashboard': {
-      const overview = getOverview();
+      const overview = await getOverview();
       const firstProject = overview.scopes.find((s) => s.name !== 'global')?.name || 'global';
       const detail = getScopeDetail(firstProject);
       return {
@@ -600,7 +697,7 @@ async function callTool(name, args = {}) {
       };
     }
     case 'memory_get_overview': {
-      const overview = getOverview();
+      const overview = await getOverview();
       return { content: [{ type: 'text', text: 'ok' }], structuredContent: overview };
     }
     case 'memory_get_scope': {

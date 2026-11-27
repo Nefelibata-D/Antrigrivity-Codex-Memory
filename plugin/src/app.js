@@ -557,16 +557,26 @@ function renderOverview(data) {
     qWrap.innerHTML = '<div class="empty">当前没有待整理的新对话</div>';
   } else {
     qWrap.innerHTML = `
-      <table>
-        <thead><tr><th>会话 ID</th><th>空间</th><th class="num">登记时间</th></tr></thead>
+      <table class="queue-table">
+        <colgroup>
+          <col />
+          <col style="width:190px" />
+          <col style="width:120px" />
+        </colgroup>
+        <thead><tr><th>会话名称</th><th>空间</th><th class="num">登记时间</th></tr></thead>
         <tbody>
-          ${items.map((it) => `
+          ${items.map((it) => {
+            const fullTitle = (it.title || it.conversation_id || '').trim();
+            const tip = it.title && it.title !== it.conversation_id
+              ? `${fullTitle}\nID: ${it.conversation_id}`
+              : it.conversation_id;
+            return `
             <tr>
-              <td style="font-family:var(--mono);font-size:12px">${escapeHtml(it.conversation_id)}</td>
-              <td><span class="scope-tag" data-tone="${getScopeTone(it.namespace || 'global')}"><span class="dot"></span>${escapeHtml(it.namespace || 'global')}</span></td>
-              <td class="num" style="color:var(--fg-muted)">${fmtTime(it.queued_at)}</td>
-            </tr>
-          `).join('')}
+              <td class="queue-title-cell"><span class="queue-title" title="${escapeHtml(tip)}">${escapeHtml(fullTitle)}</span></td>
+              <td class="queue-scope-cell"><span class="scope-tag" data-tone="${getScopeTone(it.namespace || 'global')}"><span class="dot"></span>${escapeHtml(it.namespace || 'global')}</span></td>
+              <td class="num queue-time-cell" style="color:var(--fg-muted)">${fmtTime(it.queued_at)}</td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>
     `;

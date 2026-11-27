@@ -30,8 +30,9 @@ node "C:\Users\dzc\.gemini\config\scripts\memory-engine.mjs" scan --acquire-lock
 Inspect the returned JSON:
 - `tasks`: list of conversations with new lines (`delta_text`), optional `existing_summary_path` and `existing_summary_content`, `namespace`, `date`, `from_line`, `to_line`, `mtime_ms`, and `target_rollout_dir`.
 - `ad_hoc_notes`: explicit user remember/forget/correction notes under `global/ad_hoc_notes/` or `projects/<ns>/ad_hoc_notes/`.
+- `access_denied_count` / `warning`: if `tasks` is empty AND `access_denied_count > 0`, transcripts were blocked by sandbox permissions — do **not** treat this as empty work; retry `scan` with `BypassSandbox: true` (or report the permission error if blocked).
 
-If `tasks` is empty AND `ad_hoc_notes` is empty, immediately run:
+If `tasks` is empty AND `ad_hoc_notes` is empty AND `access_denied_count` is 0, immediately run:
 ```pwsh
 node "C:\Users\dzc\.gemini\config\scripts\memory-engine.mjs" finish-run
 ```

@@ -25,6 +25,7 @@ const STATE_FILE = path.join(MEMORIES_DIR, 'state.json');
 const QUEUE_FILE = path.join(MEMORIES_DIR, 'queue.json');
 const LOCK_FILE = path.join(MEMORIES_DIR, 'consolidation.lock');
 const CONFIG_FILE = path.join(MEMORIES_DIR, 'config.json');
+const STAGING_DIR = path.join(MEMORIES_DIR, 'staging');
 
 const CONSOLIDATION_MARKER = '[CODEX-MEMORY-CONSOLIDATION]';
 const DEFAULT_CONFIG = {
@@ -59,6 +60,7 @@ function ensureBaseLayout() {
   ensureDir(GLOBAL_DIR);
   ensureDir(path.join(GLOBAL_DIR, 'ad_hoc_notes'));
   ensureDir(PROJECTS_DIR);
+  ensureDir(STAGING_DIR);
 }
 
 function readJsonSafe(filePath, fallback) {
@@ -168,13 +170,96 @@ function releaseLock() {
   }
 }
 
-function listBrainTranscripts() {
+function isAccessError(err) {
+  return Boolean(err && (err.code === 'EACCES' || err.code === 'EPERM'));
+}
+
+function resolveCompactTranscriptPath(convId, preferredPath) {
+  const compact = path.join(BRAIN_DIR, convId, '.system_generated', 'logs', 'transcript.jsonl');
+  try {
+    if (fs.existsSync(compact) && fs.statSync(compact).size > 0) return compact;
+  } catch {
+    // ignore
+  }
+  return preferredPath || compact;
+}
+
+function getStagedPath(convId) {
+  return path.join(STAGING_DIR, `${convId}.jsonl`);
+}
+
+function syncTranscriptToStaging(convId, srcPath) {
+  try {
+    const resolvedSrc = resolveCompactTranscriptPath(convId, srcPath);
+    const stat = fs.statSync(resolvedSrc);
+    if (!stat.isFile() || stat.size === 0) return null;
+    ensureDir(STAGING_DIR);
+    const dst = getStagedPath(convId);
+    let needCopy = true;
+    try {
+      const dstStat = fs.statSync(dst);
+      if (dstStat.size === stat.size && Math.abs(dstStat.mtimeMs - stat.mtimeMs) < 1000) {
+        needCopy = false;
+      }
+    } catch {
+      // destination does not exist yet
+    }
+    if (needCopy) {
+      fs.copyFileSync(resolvedSrc, dst);
+      try {
+        fs.utimesSync(dst, stat.atime, stat.mtime);
+      } catch {
+        // ignore mtime preservation failure
+      }
+    }
+    return dst;
+  } catch {
+    return null;
+  }
+}
+
+function removeStagedTranscript(convId) {
+  try {
+    const dst = getStagedPath(convId);
+    if (fs.existsSync(dst)) fs.unlinkSync(dst);
+  } catch {
+    // ignore
+  }
+}
+
+function listStagedTranscripts() {
+  const results = [];
+  if (!fs.existsSync(STAGING_DIR)) return results;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(STAGING_DIR, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const ent of entries) {
+    if (!ent.isFile() || !ent.name.endsWith('.jsonl')) continue;
+    const convId = ent.name.slice(0, -'.jsonl'.length);
+    const sPath = path.join(STAGING_DIR, ent.name);
+    try {
+      const stat = fs.statSync(sPath);
+      if (stat.isFile() && stat.size > 0) {
+        results.push({ conversation_id: convId, transcript_path: sPath, mtime_ms: stat.mtimeMs, size: stat.size });
+      }
+    } catch {
+      // skip
+    }
+  }
+  return results;
+}
+
+function listBrainTranscripts(accessDeniedSet = null) {
   const results = [];
   if (!fs.existsSync(BRAIN_DIR)) return results;
   let entries = [];
   try {
     entries = fs.readdirSync(BRAIN_DIR, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    if (accessDeniedSet && isAccessError(err)) accessDeniedSet.add(BRAIN_DIR);
     return results;
   }
   for (const ent of entries) {
@@ -186,11 +271,32 @@ function listBrainTranscripts() {
       if (stat.isFile() && stat.size > 0) {
         results.push({ conversation_id: convId, transcript_path: tPath, mtime_ms: stat.mtimeMs, size: stat.size });
       }
-    } catch {
-      // skip
+    } catch (err) {
+      if (accessDeniedSet && isAccessError(err)) accessDeniedSet.add(convId);
     }
   }
   return results;
+}
+
+function syncRecentBrainToStaging(state, queue, maxCount = 12) {
+  const transcripts = listBrainTranscripts();
+  const candidates = [];
+  for (const item of transcripts) {
+    if (state.ignored[item.conversation_id]) continue;
+    const prev = state.conversations[item.conversation_id];
+    const queued = Boolean(queue?.items?.[item.conversation_id]);
+    if (queued || !prev || item.mtime_ms > (prev.last_mtime_ms || 0) + 1000) {
+      candidates.push(item);
+    }
+  }
+  candidates.sort((a, b) => b.mtime_ms - a.mtime_ms);
+  let synced = 0;
+  for (const item of candidates.slice(0, maxCount)) {
+    if (syncTranscriptToStaging(item.conversation_id, item.transcript_path)) {
+      synced += 1;
+    }
+  }
+  return synced;
 }
 
 function hasPendingWork(state, queue) {
@@ -284,6 +390,7 @@ async function cmdSessionStart() {
 
   const state = loadState();
   const queue = loadQueue();
+  syncRecentBrainToStaging(state, queue, 12);
   if (shouldTriggerCatchup(state, queue)) {
     spawnCatchupRun();
   }
@@ -323,6 +430,72 @@ async function cmdSessionStart() {
   }));
 }
 
+function extractConversationTitleFromTranscript(filePath, maxChars = 80) {
+  if (!filePath) return '';
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(65536);
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    if (bytesRead <= 0) return '';
+    const chunk = buf.subarray(0, bytesRead).toString('utf8');
+    const lines = chunk.split(/\r?\n/);
+    for (const rawLine of lines) {
+      if (!rawLine.trim()) continue;
+      let obj;
+      try {
+        obj = JSON.parse(rawLine);
+      } catch {
+        continue;
+      }
+      if (obj.type === 'USER_INPUT' && typeof obj.content === 'string') {
+        const req = extractUserRequest(obj.content);
+        if (!req) continue;
+        const firstLine = req
+          .split(/\r?\n/)
+          .map((l) => l.replace(/^[#>*\-\s`]+/, '').trim())
+          .find((l) => l.length > 0) || '';
+        const cleaned = firstLine.replace(/\s+/g, ' ').trim();
+        if (cleaned) {
+          return cleaned.length > maxChars ? cleaned.slice(0, maxChars).trimEnd() + '…' : cleaned;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
+async function fetchConversationTitleFromLS(convId) {
+  const addr = process.env.ANTIGRAVITY_LS_ADDRESS;
+  const tok = process.env.ANTIGRAVITY_CSRF_TOKEN;
+  if (!addr || !tok || !convId) return '';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const res = await fetch(`http://${addr}/product.v1.ConversationService/GetConversation`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Connect-Protocol-Version': '1',
+        'x-antigravity-csrf-token': tok
+      },
+      body: JSON.stringify({ conversationId: convId }),
+      signal: controller.signal
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    const conv = data?.conversation || data;
+    const title = conv?.annotations?.title?.trim() || conv?.state?.summary?.trim() || '';
+    return title;
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function cmdEnqueue() {
   ensureBaseLayout();
   const payload = await readStdinJson();
@@ -336,14 +509,25 @@ async function cmdEnqueue() {
 
   const ws = (Array.isArray(payload.workspacePaths) && payload.workspacePaths[0]) || payload.cwd || '';
   const ns = normalizeNamespace(ws);
-  const transcriptPath = payload.transcriptPath || path.join(BRAIN_DIR, convId, '.system_generated', 'logs', 'transcript.jsonl');
+  const transcriptPath = resolveCompactTranscriptPath(convId, payload.transcriptPath);
+  const stagedPath = syncTranscriptToStaging(convId, transcriptPath);
 
   const queue = loadQueue();
+  const prevTitle = queue.items[convId]?.title || '';
+  const lsTitle = await fetchConversationTitleFromLS(convId);
+  const rawTitle = lsTitle
+    || (typeof payload.title === 'string' && payload.title.trim())
+    || (typeof payload.conversationTitle === 'string' && payload.conversationTitle.trim())
+    || prevTitle
+    || extractConversationTitleFromTranscript(stagedPath || transcriptPath);
+
   queue.items[convId] = {
     conversation_id: convId,
+    title: rawTitle || '',
     namespace: ns || 'global',
     workspace: ws,
     transcript_path: transcriptPath,
+    staged_path: stagedPath || getStagedPath(convId),
     queued_at: new Date().toISOString()
   };
   writeJsonAtomic(QUEUE_FILE, queue);
@@ -476,41 +660,81 @@ function cmdScan(argv) {
   const queue = loadQueue();
   const now = Date.now();
 
-  // Merge queue (priority) + full brain scan (crash-recovery fallback)
+  // Merge queue (priority) + staging mirror (sandbox-safe) + brain scan (fallback)
+  const accessDenied = new Set();
   const candidates = new Map();
+  const stagedMap = new Map();
+  for (const item of listStagedTranscripts()) {
+    stagedMap.set(item.conversation_id, item);
+  }
   for (const [id, item] of Object.entries(queue.items)) {
+    const staged = stagedMap.get(id);
     candidates.set(id, {
       conversation_id: id,
       namespace: item.namespace || '',
       transcript_path: item.transcript_path,
+      staged_path: staged ? staged.transcript_path : (item.staged_path || ''),
       from_queue: true
     });
   }
-  for (const item of listBrainTranscripts()) {
+  for (const item of stagedMap.values()) {
+    if (!candidates.has(item.conversation_id)) {
+      candidates.set(item.conversation_id, {
+        conversation_id: item.conversation_id,
+        namespace: '',
+        transcript_path: '',
+        staged_path: item.transcript_path,
+        from_queue: false
+      });
+    }
+  }
+  for (const item of listBrainTranscripts(accessDenied)) {
     if (!candidates.has(item.conversation_id)) {
       candidates.set(item.conversation_id, {
         conversation_id: item.conversation_id,
         namespace: '',
         transcript_path: item.transcript_path,
+        staged_path: '',
         from_queue: false
       });
     }
   }
 
-  // Sort: queued first, then most recently modified
+  // Pick readable source (prefer newer between brain & staging, falling back to staging if brain read is denied)
   const enriched = [];
   for (const c of candidates.values()) {
     if (c.conversation_id === excludeConvId) continue;
     if (state.ignored[c.conversation_id]) continue;
-    if (!c.transcript_path || !fs.existsSync(c.transcript_path)) continue;
-    let stat;
-    try {
-      stat = fs.statSync(c.transcript_path);
-    } catch {
-      continue;
+
+    const sources = [];
+    if (c.transcript_path) {
+      try {
+        const st = fs.statSync(c.transcript_path);
+        if (st.isFile() && st.size > 0) {
+          sources.push({ path: c.transcript_path, mtimeMs: st.mtimeMs, isStaged: false });
+        }
+      } catch (err) {
+        if (isAccessError(err)) accessDenied.add(c.conversation_id);
+      }
     }
-    if (idleSeconds > 0 && now - stat.mtimeMs < idleSeconds * 1000) continue;
-    enriched.push({ ...c, mtime_ms: stat.mtimeMs });
+
+    if (c.staged_path) {
+      try {
+        const st = fs.statSync(c.staged_path);
+        if (st.isFile() && st.size > 0) {
+          sources.push({ path: c.staged_path, mtimeMs: st.mtimeMs, isStaged: true });
+        }
+      } catch (err) {
+        if (isAccessError(err)) accessDenied.add(c.conversation_id);
+      }
+    }
+
+    if (sources.length === 0) continue;
+    // Try newer source first; if equal mtime, prefer staged (always sandbox-readable)
+    sources.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (Number(b.isStaged) - Number(a.isStaged)));
+    const latestMtime = sources[0].mtimeMs;
+    if (idleSeconds > 0 && now - latestMtime < idleSeconds * 1000) continue;
+    enriched.push({ ...c, sources, mtime_ms: latestMtime });
   }
   enriched.sort((a, b) => Number(b.from_queue) - Number(a.from_queue) || b.mtime_ms - a.mtime_ms);
 
@@ -519,12 +743,20 @@ function cmdScan(argv) {
 
   for (const item of enriched) {
     if (tasks.length >= limit) break;
-    let raw;
-    try {
-      raw = fs.readFileSync(item.transcript_path, 'utf8');
-    } catch {
-      continue;
+    let raw = null;
+    let usedMtime = item.mtime_ms;
+    for (const src of item.sources) {
+      try {
+        raw = fs.readFileSync(src.path, 'utf8');
+        usedMtime = src.mtimeMs;
+        accessDenied.delete(item.conversation_id);
+        break;
+      } catch (err) {
+        if (isAccessError(err)) accessDenied.add(item.conversation_id);
+      }
     }
+    if (raw === null) continue;
+    item.mtime_ms = usedMtime;
     const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
     if (lines.length === 0) continue;
 
@@ -533,6 +765,7 @@ function cmdScan(argv) {
     if (headSample.includes(CONSOLIDATION_MARKER)) {
       state.ignored[item.conversation_id] = true;
       delete queue.items[item.conversation_id];
+      removeStagedTranscript(item.conversation_id);
       stateDirty = true;
       continue;
     }
@@ -544,6 +777,7 @@ function cmdScan(argv) {
         delete queue.items[item.conversation_id];
         stateDirty = true;
       }
+      removeStagedTranscript(item.conversation_id);
       continue;
     }
 
@@ -558,6 +792,7 @@ function cmdScan(argv) {
         updated_at: new Date().toISOString()
       };
       delete queue.items[item.conversation_id];
+      removeStagedTranscript(item.conversation_id);
       stateDirty = true;
       continue;
     }
@@ -588,12 +823,17 @@ function cmdScan(argv) {
   }
 
   const adHocNotes = listAdHocNotes();
-  process.stdout.write(JSON.stringify({
+  const output = {
     memories_root: MEMORIES_DIR,
     pending_count: tasks.length,
+    access_denied_count: accessDenied.size,
     tasks,
     ad_hoc_notes: adHocNotes
-  }, null, 2));
+  };
+  if (accessDenied.size > 0 && tasks.length === 0) {
+    output.warning = `Access denied reading ${accessDenied.size} transcript(s) under ${BRAIN_DIR}. Run sync-staging outside sandbox or retry scan with BypassSandbox: true.`;
+  }
+  process.stdout.write(JSON.stringify(output, null, 2));
 }
 
 function cmdCommit(argv) {
@@ -618,9 +858,20 @@ function cmdCommit(argv) {
   };
 
   delete queue.items[convId];
+  removeStagedTranscript(convId);
   writeJsonAtomic(STATE_FILE, state);
   writeJsonAtomic(QUEUE_FILE, queue);
   process.stdout.write(JSON.stringify({ ok: true, conversation_id: convId }));
+}
+
+function cmdSyncStaging(argv) {
+  ensureBaseLayout();
+  const flags = parseFlags(argv);
+  const limit = Number(flags.limit ?? 20);
+  const state = loadState();
+  const queue = loadQueue();
+  const synced = syncRecentBrainToStaging(state, queue, limit);
+  process.stdout.write(JSON.stringify({ ok: true, synced, staging_dir: STAGING_DIR }));
 }
 
 function cmdFinishRun() {
@@ -649,7 +900,10 @@ switch (cmd) {
   case 'finish-run':
     cmdFinishRun();
     break;
+  case 'sync-staging':
+    cmdSyncStaging(rest);
+    break;
   default:
-    console.error('Usage: memory-engine.mjs <session-start|enqueue|scan|commit|finish-run>');
+    console.error('Usage: memory-engine.mjs <session-start|enqueue|scan|commit|finish-run|sync-staging>');
     process.exit(1);
 }

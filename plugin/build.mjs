@@ -616,6 +616,18 @@ const html = `<!doctype html>
     tr:last-child td { border-bottom: 0; }
     tbody tr:hover { background: color-mix(in srgb, var(--subtle) 55%, transparent); }
     .num { text-align: right; white-space: nowrap; }
+    .queue-table { table-layout: fixed; }
+    .queue-title-cell { overflow: hidden; }
+    .queue-title {
+      display: block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12.5px;
+      color: var(--fg);
+    }
+    .queue-scope-cell, .queue-time-cell { white-space: nowrap; }
 
     /* Search & Inputs */
     .search-box {
@@ -1430,7 +1442,7 @@ const html = `<!doctype html>
         <div class="card">
           <div class="card-head">
             <h2>版本与自动更新</h2>
-            <span class="pill" id="updStatusPill" data-tone="info">当前 v1.1.1</span>
+            <span class="pill" id="updStatusPill" data-tone="info">当前 v1.1.2</span>
           </div>
           <div class="setting-row">
             <div class="setting-meta">
