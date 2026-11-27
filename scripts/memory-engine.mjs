@@ -72,9 +72,19 @@ function readJsonSafe(filePath, fallback) {
 
 function writeJsonAtomic(filePath, data) {
   ensureDir(path.dirname(filePath));
+  const json = JSON.stringify(data, null, 2);
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-  fs.renameSync(tmp, filePath);
+  try {
+    fs.writeFileSync(tmp, json, 'utf8');
+    fs.renameSync(tmp, filePath);
+  } catch {
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    } catch {
+      // ignore cleanup error
+    }
+    fs.writeFileSync(filePath, json, 'utf8');
+  }
 }
 
 function normalizeNamespace(workspacePath) {

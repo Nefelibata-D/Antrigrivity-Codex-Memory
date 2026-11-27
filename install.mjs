@@ -9,7 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
 import { execSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const args = new Set(process.argv.slice(2));
@@ -26,6 +26,8 @@ const SKILL_DST = path.join(GEMINI_CFG, 'skills', 'codex-memory-pipeline', 'SKIL
 const RULE_DST = path.join(GEMINI_CFG, 'rules', 'supermemory.md');
 const HOOKS_FILE = path.join(GEMINI_CFG, 'hooks.json');
 const MEMORIES_DIR = path.join(GEMINI_CFG, 'memories');
+const BRAIN_DIR = path.join(HOME, '.gemini', 'antigravity', 'brain');
+const SIDECAR_FILE = path.join(GEMINI_CFG, 'sidecars', 'nightly-memory-consolidation', 'sidecar.json');
 
 function log(msg) {
   console.log(`[antigrivity-memory] ${msg}`);
@@ -176,6 +178,52 @@ async function main() {
 
   // Merge SessionStart & Stop hooks into hooks.json
   mergeHooks(overwriteExisting);
+
+  // Configure nightly Memory Consolidation automation with memories + brain permissions
+  const sidecarExists = fs.existsSync(SIDECAR_FILE);
+  if (sidecarExists && !overwriteExisting) {
+    log(`跳过定时任务配置（已存在）: ${SIDECAR_FILE}`);
+  } else {
+    const sidecarConfig = {
+      builtin: 'schedule',
+      args: [
+        'CRON_TZ=Asia/Shanghai 30 23 * * *',
+        'agentapi',
+        'new-conversation',
+        '--model=gemini-4-hydrogen-medium',
+        '--title=Memory Consolidation',
+        '--',
+        `[CODEX-MEMORY-CONSOLIDATION] Follow the codex-memory-pipeline skill at ${SKILL_DST} to run the memory consolidation pipeline.`
+      ],
+      restart_policy: 'always',
+      display_name: 'Memory Consolidation',
+      description: 'Every night at 23:30 (Asia/Shanghai), runs the offline memory consolidation pipeline.',
+      agent_permissions: {
+        workspace_uris: [
+          pathToFileURL(MEMORIES_DIR).href,
+          pathToFileURL(BRAIN_DIR).href
+        ],
+        access_grants: [
+          `command(node ${SCRIPT_DST})`,
+          `read_file(${MEMORIES_DIR})`,
+          `write_file(${MEMORIES_DIR})`,
+          `read_file(${BRAIN_DIR})`,
+          `read_file(${path.dirname(SKILL_DST)})`,
+          'mcp(supermemory/add_memory)',
+          'mcp(supermemory/get_profile)',
+          'mcp(supermemory/search_memory)',
+          'mcp(supermemory/forget_memory)'
+        ]
+      }
+    };
+    if (DRY_RUN) {
+      log(`[预览] ${sidecarExists ? '更新' : '创建'}定时任务配置: ${SIDECAR_FILE}`);
+    } else {
+      ensureDir(path.dirname(SIDECAR_FILE));
+      fs.writeFileSync(SIDECAR_FILE, JSON.stringify(sidecarConfig, null, 2) + '\n', 'utf8');
+      log(`${sidecarExists ? '已更新' : '已创建'}定时任务配置: ${SIDECAR_FILE}`);
+    }
+  }
 
   // Install plugin npm dependencies & build dashboard.html
   if (!DRY_RUN) {

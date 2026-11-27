@@ -377,7 +377,11 @@ const html = `<!doctype html>
       display: flex;
       flex-direction: column;
       gap: 14px;
-      padding-right: 2px;
+      padding-right: 10px;
+      padding-bottom: 12px;
+    }
+    .view-scroll > * {
+      flex-shrink: 0;
     }
 
     .view-card {
