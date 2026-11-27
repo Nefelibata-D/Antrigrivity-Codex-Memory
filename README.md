@@ -6,100 +6,94 @@
 
 ## 中文
 
-为 **Google Antigravity** 打造的 **本地热记忆 + Supermemory 云端长尾记忆** 双层记忆系统与可视化管理面板（MCP App Plugin）。
+为 **Google Antigravity** 打造的 **本地热记忆 + Supermemory 云端长尾记忆** 双层记忆系统与可视化管理面板。
 
 ### 核心特性
 
-- **双层记忆架构**：
-  - **本地热记忆**：通过 `SessionStart` Hook 自动将全局摘要与当前项目的 `memory_summary.md` 注入会话上下文，零额外模型调用开销。
-  - **离线增量整理**：通过 `Stop` Hook 将变更会话入队，由整理流水线定期或手动提炼 `rollout_summaries/` 并合并热记忆摘要。
-  - **云端长尾检索**：与 Supermemory MCP 协同，自动双写高价值长期事实，支持跨项目语义检索与画像回流。
-- **Memory Dashboard MCP App**：
-  - 支持左侧边栏（`global`）与右侧辅助面板（`aux_pane`）双入口；所有数据工具均标记 `visibility: ["app"]`，不占用对话上下文 Token。
-  - 提供 **概览（KPI + 趋势图 + 热力图）**、**热记忆（Markdown 预览/编辑 + 预算环）**、**历史记录（Rollouts 双栏独立滚动）**、**快捷便签（ad_hoc_notes）**、**设置** 五大视图。
-  - 内置 **热重载** 按钮与 **自动检查/一键更新**（基于 GitHub Releases）。
+- **开场自动注入热记忆**：新会话启动时自动注入全局偏好与当前项目的精炼记忆摘要，无需手动提醒。
+- **离线自动增量整理**：每日定时将近期会话提炼为结构化历史摘要（Rollouts）并合并更新热记忆，保持长期记忆整洁有序。
+- **云端长尾检索**：与 Supermemory MCP 无缝协同，自动双写高价值长期事实，支持跨项目语义检索。
+- **内置 Memory 可视化面板**：
+  - 支持左侧边栏与右侧辅助面板打开，不占用对话上下文 Token。
+  - 提供 **概览（指标、趋势图与热力图）**、**热记忆（预览与编辑）**、**历史记录**、**快捷便签**、**设置** 五大视图。
+  - 支持面板内 **检查更新与一键在线更新**。
 
 ### 一键安装
 
-前置要求：**Node.js >= 18**。
+前置要求：**Node.js >= 18**。安装过程**不会覆盖**已有的本地记忆数据；如检测到已有配置会提示选择覆盖或跳过。
+
+#### 方式一：AI 一键安装（推荐）
+
+直接复制以下提示词发送给 Antigravity：
+
+> 请帮我从 GitHub 仓库 `https://github.com/Nefelibata-D/Antrigrivity-Codex-Memory` 下载最新 Release，并运行其中的一键安装脚本为我安装 Antigrivity Memory（保留我现有的记忆数据不要覆盖），安装完成后告诉我是否需要重启插件。
+
+#### 方式二：Windows (PowerShell)
 
 ```powershell
-# Windows (PowerShell)
-.\install.ps1
+irm https://raw.githubusercontent.com/Nefelibata-D/Antrigrivity-Codex-Memory/main/install.ps1 | iex
 ```
+
+#### 方式三：Linux / macOS
 
 ```bash
-# Linux / macOS
-chmod +x install.sh && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/Nefelibata-D/Antrigrivity-Codex-Memory/main/install.sh | bash
 ```
 
-```bash
-# 任意平台通用
-node install.mjs
-```
+安装完成后，重启 Antigravity（或在 Plugins Manager 中重新启用 **Memory** 插件），即可在侧边栏打开 **Memory** 面板。
 
-支持参数：
-- `--force` / `-y`：检测到已有文件时直接覆盖更新。
-- `--skip-existing`：跳过已存在的文件，仅补充缺失项（交互模式下默认也会询问 `覆盖 / 跳过 / 取消`）。
-- `--dry-run`：仅预览安装步骤，不实际写入。
-- `--skip-npm`：跳过 `npm install`。
-- *安全保障*：安装脚本**永远不会覆盖** `~/.gemini/config/memories/` 下已有的记忆数据。
+### 常用配置
 
-### 开发、热重载与发布（Tag 规范）
-
-- **本地开发同步**：修改代码后运行 `node sync.mjs`，随后点击 Memory 面板右上角 **「热重载」** 即可原地刷新界面。
-- **发布新版本（自动打 Tag + Release）**：每次发布必须提供清晰的中文/双语更新说明，供插件内「检查更新」展示：
-  ```bash
-  node release.mjs v1.1.0 "- 新增插件内自动更新功能\n- 更新双语 README"
-  ```
+在 Memory 面板的 **「设置」** 标签页中可直接调整：
+- **Supermemory 云端双写开关**
+- **每日自动整理时间与整理模型**
+- **开场注入总上限（Bytes）与 Global / Project 预算比例**
+- **版本检查与一键更新**
 
 ---
 
 ## English
 
-A hybrid **Local Hot Memory + Supermemory Cloud Long-Tail Memory** system and visual MCP App dashboard plugin for **Google Antigravity**.
+A hybrid **Local Hot Memory + Supermemory Cloud Long-Tail Memory** system with a visual management dashboard for **Google Antigravity**.
 
 ### Key Features
 
-- **Hybrid Two-Layer Memory**:
-  - **Local Hot Memory**: Injects global and per-project `memory_summary.md` via `SessionStart` hook with zero extra model calls.
-  - **Offline Incremental Consolidation**: Queues active sessions on `Stop` hook and distills `rollout_summaries/` into compact hot summaries.
-  - **Cloud Long-Tail Recall**: Dual-writes durable facts to Supermemory MCP for cross-project semantic search and profile synthesis.
-- **Memory Dashboard MCP App**:
-  - Dual entrypoints (`global` sidebar + `aux_pane`); all data tools use `visibility: ["app"]` for zero context token overhead.
-  - Five views: **Overview (KPIs + Sparklines + Heatmap)**, **Hot Memory (Markdown Preview/Edit + Budget Ring)**, **Rollouts (Independent Split Scroll)**, **Ad-Hoc Notes**, and **Settings**.
-  - Built-in **Hot Reload** button and **Auto-Update** via GitHub Releases.
+- **Automatic Session Hot Memory**: Automatically injects global preferences and project-specific memory summaries at the start of every session.
+- **Scheduled Offline Consolidation**: Distills recent conversations into structured rollout summaries and keeps hot memory concise automatically.
+- **Cloud Long-Tail Recall**: Works seamlessly with Supermemory MCP for cross-project semantic search and durable fact retention.
+- **Built-in Memory Dashboard**:
+  - Accessible from both the left sidebar and right auxiliary pane with zero context token overhead.
+  - Five views: **Overview (KPIs, Sparklines & Heatmap)**, **Hot Memory (Preview & Edit)**, **History (Rollouts)**, **Quick Notes**, and **Settings**.
+  - Built-in **update checker & one-click auto-updater**.
 
 ### One-Click Installation
 
-Prerequisite: **Node.js >= 18**.
+Prerequisite: **Node.js >= 18**. Existing local memory data is **never** overwritten; if existing config files are detected, you will be prompted to overwrite or skip.
+
+#### Option 1: One-Click AI Install (Recommended)
+
+Copy and send this prompt directly to Antigravity:
+
+> Please download the latest release from `https://github.com/Nefelibata-D/Antrigrivity-Codex-Memory` and run its installer to set up Antigrivity Memory for me (keep my existing memory data untouched). Let me know once it's done and whether I should reload the plugin.
+
+#### Option 2: Windows (PowerShell)
 
 ```powershell
-# Windows (PowerShell)
-.\install.ps1
+irm https://raw.githubusercontent.com/Nefelibata-D/Antrigrivity-Codex-Memory/main/install.ps1 | iex
 ```
+
+#### Option 3: Linux / macOS
 
 ```bash
-# Linux / macOS
-chmod +x install.sh && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/Nefelibata-D/Antrigrivity-Codex-Memory/main/install.sh | bash
 ```
 
-```bash
-# Cross-platform
-node install.mjs
-```
+After installation, restart Antigravity (or toggle the **Memory** plugin in Plugins Manager) to open the **Memory** panel from the sidebar.
 
-Flags:
-- `--force` / `-y`: Overwrite existing installed files without prompting.
-- `--skip-existing`: Keep existing files and only install missing ones (interactive mode prompts by default).
-- `--dry-run`: Preview actions without modifying any files.
-- `--skip-npm`: Skip `npm install`.
-- *Safety*: Existing memory data under `~/.gemini/config/memories/` is **never** overwritten.
+### Configuration
 
-### Development, Hot Reload & Releases
-
-- **Sync & Hot Reload**: Run `node sync.mjs` after editing, then click **Hot Reload (热重载)** in the Memory panel.
-- **Tagging & Releasing**: Always include clear release notes when tagging so the in-app updater can display what changed:
-  ```bash
-  node release.mjs v1.1.0 "- Add in-app auto-update\n- Add bilingual README"
-  ```
+All settings can be adjusted directly in the **Settings** tab of the Memory dashboard:
+- **Supermemory Cloud Sync toggle**
+- **Daily consolidation schedule & model**
+- **Session injection byte budget & Global / Project split ratio**
+- **Version check & one-click update**
