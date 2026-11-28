@@ -33,6 +33,9 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           MSG="$(git tag -l --format='%(contents:body)' "$TAG")"
+          if [ -z "$(echo "$MSG" | tr -d '[:space:]')" ]; then
+            MSG="$(git tag -l --format='%(contents)' "$TAG")"
+          fi
           {
             echo "body<<EOF"
             echo "$MSG"
@@ -45,4 +48,4 @@ jobs:
         with:
           name: ${{ github.ref_name }}
           body: ${{ steps.tag_msg.outputs.body }}
-          generate_release_notes: true
+          generate_release_notes: false
