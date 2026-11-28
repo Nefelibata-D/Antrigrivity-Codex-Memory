@@ -1442,7 +1442,7 @@ const html = `<!doctype html>
         <div class="card">
           <div class="card-head">
             <h2>版本与自动更新</h2>
-            <span class="pill" id="updStatusPill" data-tone="info">当前 v1.1.2</span>
+            <span class="pill" id="updStatusPill" data-tone="info">当前 v1.1.3</span>
           </div>
           <div class="setting-row">
             <div class="setting-meta">

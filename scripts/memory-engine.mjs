@@ -20,6 +20,7 @@ const MEMORIES_DIR = path.join(CONFIG_DIR, 'memories');
 const GLOBAL_DIR = path.join(MEMORIES_DIR, 'global');
 const PROJECTS_DIR = path.join(MEMORIES_DIR, 'projects');
 const BRAIN_DIR = path.join(HOME, '.gemini', 'antigravity', 'brain');
+const SUMMARIES_DB = path.join(HOME, '.gemini', 'antigravity', 'conversation_summaries.db');
 
 const STATE_FILE = path.join(MEMORIES_DIR, 'state.json');
 const QUEUE_FILE = path.join(MEMORIES_DIR, 'queue.json');
@@ -467,6 +468,43 @@ function extractConversationTitleFromTranscript(filePath, maxChars = 80) {
   return '';
 }
 
+async function lookupConversationMetaFromDB(convId) {
+  if (!convId || !fs.existsSync(SUMMARIES_DB)) return null;
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(SUMMARIES_DB, { readOnly: true });
+    try {
+      const row = db
+        .prepare('SELECT title, preview, parent_conversation_id, nesting_depth FROM conversation_summaries WHERE conversation_id = ?')
+        .get(convId);
+      if (!row) return null;
+      return {
+        title: String(row.title || row.preview || '').trim(),
+        isSubagent: Boolean(row.parent_conversation_id) || Number(row.nesting_depth || 0) > 0
+      };
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+function transcriptHasUserInput(filePath) {
+  if (!filePath) return true;
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(65536);
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    if (bytesRead <= 0) return false;
+    const chunk = buf.subarray(0, bytesRead).toString('utf8');
+    return chunk.includes('"type":"USER_INPUT"') || chunk.includes('"type": "USER_INPUT"');
+  } catch {
+    return true;
+  }
+}
+
 async function fetchConversationTitleFromLS(convId) {
   const addr = process.env.ANTIGRAVITY_LS_ADDRESS;
   const tok = process.env.ANTIGRAVITY_CSRF_TOKEN;
@@ -510,12 +548,19 @@ async function cmdEnqueue() {
   const ws = (Array.isArray(payload.workspacePaths) && payload.workspacePaths[0]) || payload.cwd || '';
   const ns = normalizeNamespace(ws);
   const transcriptPath = resolveCompactTranscriptPath(convId, payload.transcriptPath);
-  const stagedPath = syncTranscriptToStaging(convId, transcriptPath);
 
+  const dbMeta = await lookupConversationMetaFromDB(convId);
+  if (dbMeta?.isSubagent || !transcriptHasUserInput(transcriptPath)) {
+    process.stdout.write(JSON.stringify({ decision: 'allow' }));
+    return;
+  }
+
+  const stagedPath = syncTranscriptToStaging(convId, transcriptPath);
   const queue = loadQueue();
   const prevTitle = queue.items[convId]?.title || '';
-  const lsTitle = await fetchConversationTitleFromLS(convId);
-  const rawTitle = lsTitle
+  const lsTitle = dbMeta?.title ? '' : await fetchConversationTitleFromLS(convId);
+  const rawTitle = dbMeta?.title
+    || lsTitle
     || (typeof payload.title === 'string' && payload.title.trim())
     || (typeof payload.conversationTitle === 'string' && payload.conversationTitle.trim())
     || prevTitle

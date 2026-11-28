@@ -30,6 +30,7 @@ const LOCK_FILE = path.join(MEMORIES_DIR, 'consolidation.lock');
 const CONFIG_FILE = path.join(MEMORIES_DIR, 'config.json');
 const STAGING_DIR = path.join(MEMORIES_DIR, 'staging');
 const BRAIN_DIR = path.join(HOME, '.gemini', 'antigravity', 'brain');
+const SUMMARIES_DB = path.join(HOME, '.gemini', 'antigravity', 'conversation_summaries.db');
 const MCP_CONFIG_FILE = path.join(CONFIG_DIR, 'mcp_config.json');
 const MCP_SCHEMAS_DIR = path.join(HOME, '.gemini', 'antigravity', 'mcp', 'supermemory');
 
@@ -194,6 +195,35 @@ function extractTitleFromTranscript(filePath, maxChars = 80) {
   return '';
 }
 
+async function fetchConversationMetaFromDB(convIds) {
+  const map = new Map();
+  if (!Array.isArray(convIds) || convIds.length === 0 || !fs.existsSync(SUMMARIES_DB)) return map;
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(SUMMARIES_DB, { readOnly: true });
+    try {
+      const stmt = db.prepare(
+        'SELECT conversation_id, title, preview, parent_conversation_id, nesting_depth FROM conversation_summaries WHERE conversation_id = ?'
+      );
+      for (const id of convIds) {
+        if (!id) continue;
+        const row = stmt.get(id);
+        if (row) {
+          map.set(id, {
+            title: String(row.title || row.preview || '').trim(),
+            isSubagent: Boolean(row.parent_conversation_id) || Number(row.nesting_depth || 0) > 0
+          });
+        }
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    // ignore sqlite failure
+  }
+  return map;
+}
+
 async function fetchConversationTitlesFromLS(convIds) {
   const map = new Map();
   const addr = process.env.ANTIGRAVITY_LS_ADDRESS;
@@ -227,8 +257,10 @@ async function fetchConversationTitlesFromLS(convIds) {
   return map;
 }
 
-function resolveConversationTitle(item, lsTitleMap) {
+function resolveConversationTitle(item, dbMetaMap, lsTitleMap) {
   const id = item?.conversation_id || '';
+  const dbTitle = id ? dbMetaMap?.get(id)?.title : '';
+  if (dbTitle) return dbTitle;
   if (id && lsTitleMap?.has(id)) return lsTitleMap.get(id);
   if (item?.title && String(item.title).trim()) return String(item.title).trim();
   const candidates = [
@@ -321,11 +353,16 @@ async function getOverview() {
   });
 
   const rawQueueItems = Object.values(queue.items || {});
-  const lsTitleMap = await fetchConversationTitlesFromLS(rawQueueItems.map((it) => it.conversation_id));
-  const queueItems = rawQueueItems.map((it) => ({
-    ...it,
-    title: resolveConversationTitle(it, lsTitleMap)
-  }));
+  const ids = rawQueueItems.map((it) => it.conversation_id);
+  const dbMetaMap = await fetchConversationMetaFromDB(ids);
+  const missingIds = ids.filter((id) => !dbMetaMap.get(id)?.title);
+  const lsTitleMap = missingIds.length > 0 ? await fetchConversationTitlesFromLS(missingIds) : new Map();
+  const queueItems = rawQueueItems
+    .filter((it) => !dbMetaMap.get(it.conversation_id)?.isSubagent)
+    .map((it) => ({
+      ...it,
+      title: resolveConversationTitle(it, dbMetaMap, lsTitleMap)
+    }));
 
   return {
     last_successful_run_at: state.last_successful_run_at || null,
